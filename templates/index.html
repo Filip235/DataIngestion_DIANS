@@ -1,0 +1,175 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Stock Historical Data</title>
+    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background-color: #f4f4f4;
+            text-align: center;
+            margin: 0;
+            padding: 0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        h1 {
+            color: #333;
+            margin-top: 20px;
+        }
+
+        form {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            max-width: 600px;
+            width: 90%;
+        }
+
+        select, button {
+            padding: 10px;
+            margin: 10px;
+            font-size: 16px;
+            width: 80%;
+            max-width: 300px;
+            text-align: center;
+        }
+
+        button {
+            background-color: #28a745;
+            color: white;
+            border: none;
+            cursor: pointer;
+            border-radius: 4px;
+            transition: 0.3s;
+        }
+
+        button:hover {
+            background-color: #218838;
+        }
+
+        .data-container {
+            margin-top: 20px;
+            padding: 20px;
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+            text-align: left;
+            max-width: 90%;
+            width: 1400px;
+            overflow-x: auto;
+        }
+
+        .chart-container {
+            width: 100%;
+            max-width: 1400px;
+            margin: 20px auto;
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+        }
+
+        #stockChart {
+            width: 100%;
+            height: 500px;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 10px;
+        }
+
+        th, td {
+            border: 1px solid #ddd;
+            padding: 8px;
+            text-align: left;
+        }
+
+        th {
+            background-color: #28a745;
+            color: white;
+        }
+
+        @media (max-width: 768px) {
+            .data-container, .chart-container {
+                width: 95%;
+            }
+            select, button {
+                width: 100%;
+            }
+        }
+    </style>
+
+</head>
+<body>
+
+    <h1>Select a Company</h1>
+
+    <form method="post">
+        <select name="ticker">
+            {% for ticker, name in companies.items() %}
+                <option value="{{ ticker }}" {% if ticker == selected_ticker %}selected{% endif %}>
+                    {{ name }} ({{ ticker }})
+                </option>
+            {% endfor %}
+        </select>
+        <button type="submit">Get Data</button>
+    </form>
+
+    {% if selected_ticker %}
+     <div class="data-container">
+        <h2>Real-Time Price for {{ companies[selected_ticker] }} ({{ selected_ticker }})</h2>
+        <p style="font-size: 20px; font-weight: bold; color: #28a745;">Current Price: {{ real_time_price }}</p>
+    </div>
+
+    <div class="chart-container">
+        <h2>Stock Price Chart</h2>
+        <div id="stockChart"></div>
+    </div>
+
+    <div class="data-container">
+        <h2>Historical Data</h2>
+        {% if historical_data %}
+            {{ historical_data | safe }}
+        {% else %}
+            <p>No data available for {{ companies[selected_ticker] }}.</p>
+        {% endif %}
+    </div>
+
+    <script>
+        var chartData = {{ chart_data | safe }};
+
+        if (chartData && chartData.length > 0) {
+            var trace = {
+                x: chartData.map(d => d.Date),
+                y: chartData.map(d => d.Close),
+                mode: 'lines',
+                line: { color: 'blue' }
+            };
+
+            var layout = {
+                title: "Stock Closing Price Over Time",
+                xaxis: { title: "Date" },
+                yaxis: { title: "Price ($)" }
+            };
+
+            Plotly.newPlot("stockChart", [trace], layout);
+        }
+    </script>
+    {% endif %}
+
+</body>
+</html>
+
+

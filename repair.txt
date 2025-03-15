@@ -1,0 +1,310 @@
+from flask import Flask, request, render_template
+import yfinance as yf
+import datetime
+import requests
+import json
+from yahooquery import Screener
+from confluent_kafka import Producer, Consumer
+import psycopg2
+
+# Database Configuration
+DB_CONFIG = {
+    "dbname": "DataBase",
+    "user": "postgres",
+    "password": "",
+    "host": "localhost",  # Change if using a remote database
+    "port": "5432"
+}
+
+
+# Connect to PostgreSQL
+def connect_db():
+    return psycopg2.connect(**DB_CONFIG)
+
+
+# Insert or Update Company Data in DB
+def insert_company_data(company_name, stock_price):
+    """Insert new company or update stock price if it already exists."""
+    try:
+        conn = connect_db()
+        cursor = conn.cursor()
+
+        query = """
+        INSERT INTO companies (name, stock_price)
+        VALUES (%s, %s)
+        ON CONFLICT (name) 
+        DO UPDATE SET stock_price = EXCLUDED.stock_price;
+        """
+
+        cursor.execute(query, (company_name, stock_price))
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        print(f"✅ Successfully Inserted/Updated {company_name}: {stock_price}$")
+
+    except Exception as e:
+        print(f"❌ Database Insert Error: {e}")
+
+
+# Alpha Vantage API Key
+ALPHA_VANTAGE_API_KEY = "M1M8ZIU3FDBMNGP0"
+
+# Kafka Config
+KAFKA_BROKER = "localhost:9092"
+KAFKA_TOPIC = "stock_prices"
+
+# Initialize Kafka Producer
+producer = Producer({"bootstrap.servers": KAFKA_BROKER})
+
+# Initialize Kafka Consumer
+consumer = Consumer({
+    "bootstrap.servers": KAFKA_BROKER,
+    "group.id": "flask-consumer-group",
+    "auto.offset.reset": "earliest"
+})
+consumer.subscribe([KAFKA_TOPIC])
+
+app = Flask(__name__)
+
+
+def get_all_tickers():
+    """Fetch all stock tickers from Yahoo Finance for major exchanges."""
+    screener = Screener()
+    tickers = {}
+    exchanges = ["most_actives", "day_gainers", "day_losers", "nasdaq", "nyse", "tsx", "london"]
+
+    for exchange in exchanges:
+        try:
+            data = screener.get_screeners(exchange, count=100)
+            if exchange in data and "quotes" in data[exchange]:
+                for stock in data[exchange]["quotes"]:
+                    tickers[stock["symbol"]] = stock.get("shortName", stock["symbol"])
+        except Exception as e:
+            print(f"Error fetching {exchange}: {e}")
+
+    return tickers
+
+
+COMPANIES = get_all_tickers()
+
+
+def get_historical_data(ticker):
+    """Fetch last 10 years of historical data in descending order."""
+    try:
+        stock = yf.Ticker(ticker)
+        end_date = datetime.datetime.today().strftime('%Y-%m-%d')
+        start_date = (datetime.datetime.today() - datetime.timedelta(days=10 * 365)).strftime('%Y-%m-%d')
+        history = stock.history(start=start_date, end=end_date)
+
+        if history.empty:
+            return None
+
+        history = history.sort_index(ascending=False)
+        history["Open"] = history["Open"].apply(lambda x: f"{x:.5f}$")
+        history["High"] = history["High"].apply(lambda x: f"{x:.5f}$")
+        history["Low"] = history["Low"].apply(lambda x: f"{x:.5f}$")
+        history["Close"] = history["Close"].apply(lambda x: f"{x:.5f}$")
+
+        return history.to_html()
+    except Exception as e:
+        return f"Error fetching data: {e}"
+
+
+def get_real_time_price(ticker):
+    """Fetch real-time stock price, send to Kafka, and store in DB"""
+    url = f"https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol={ticker}&apikey={ALPHA_VANTAGE_API_KEY}"
+
+    try:
+        response = requests.get(url)
+        data = response.json()
+
+        if "Global Quote" in data:
+            price = data["Global Quote"].get("05. price", "N/A")
+
+            if price != "N/A":
+                stock_price = round(float(price), 2)  # Ensure numeric format
+                insert_company_data(ticker, stock_price)  # Insert or update in DB
+
+                # Send to Kafka
+                producer.produce(KAFKA_TOPIC, key=ticker, value=json.dumps({"ticker": ticker, "price": stock_price}))
+                producer.flush()
+
+                return f"{stock_price}$"
+
+        return "N/A"
+    except Exception as e:
+        print(f"❌ Error fetching real-time price: {e}")
+        return "Error"
+
+
+def consume_kafka():
+    """Consume real-time stock data from Kafka."""
+    try:
+        msg = consumer.poll(1.0)  # Poll messages for 1 second
+        if msg is None:
+            return "Waiting for data..."
+        if msg.error():
+            return f"Consumer error: {msg.error()}"
+
+        data = json.loads(msg.value().decode("utf-8"))
+        return f"{data['ticker']}: {data['price']}"
+    except Exception as e:
+        return f"Error consuming Kafka data: {e}"
+
+
+@app.route("/", methods=["GET", "POST"])
+def index():
+    historical_data = None
+    real_time_price = "N/A"
+    kafka_data = "Waiting for data..."
+    selected_ticker = ""
+
+    if request.method == "POST":
+        selected_ticker = request.form["ticker"]
+        historical_data = get_historical_data(selected_ticker)
+        real_time_price = get_real_time_price(selected_ticker)
+        kafka_data = consume_kafka()
+
+    return render_template("index.html",
+                           historical_data=historical_data,
+                           real_time_price=real_time_price,
+                           kafka_data=kafka_data,
+                           selected_ticker=selected_ticker,
+                           companies=COMPANIES)
+
+
+if __name__ == "__main__":
+    app.run(debug=True)
+
+
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Stock Historical Data</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background-color: #f4f4f4;
+            text-align: center;
+            margin: 0;
+            padding: 0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        h1 {
+            color: #333;
+            margin-top: 20px;
+        }
+
+        form {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            max-width: 600px;
+            width: 90%;
+        }
+
+        select, button {
+            padding: 10px;
+            margin: 10px;
+            font-size: 16px;
+            width: 80%;
+            max-width: 300px;
+            text-align: center;
+        }
+
+        button {
+            background-color: #28a745;
+            color: white;
+            border: none;
+            cursor: pointer;
+            border-radius: 4px;
+            transition: 0.3s;
+        }
+
+        button:hover {
+            background-color: #218838;
+        }
+
+        .data-container {
+            margin-top: 20px;
+            padding: 20px;
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+            text-align: left;
+            max-width: 90%;
+            width: 1200px;
+            overflow-x: auto;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 10px;
+        }
+
+        th, td {
+            border: 1px solid #ddd;
+            padding: 8px;
+            text-align: left;
+        }
+
+        th {
+            background-color: #28a745;
+            color: white;
+        }
+
+        @media (max-width: 768px) {
+            .data-container {
+                width: 95%;
+            }
+            select, button {
+                width: 100%;
+            }
+        }
+    </style>
+</head>
+<body>
+
+    <h1>Select a Company</h1>
+
+    <form method="post">
+        <select name="ticker">
+            {% for ticker, name in companies.items() %}
+                <option value="{{ ticker }}" {% if ticker == selected_ticker %}selected{% endif %}>
+                    {{ name }} ({{ ticker }})
+                </option>
+            {% endfor %}
+        </select>
+        <button type="submit">Get Data</button>
+    </form>
+
+    {% if selected_ticker %}
+    <div class="data-container">
+        <h2>Real-Time Price for {{ companies[selected_ticker] }} ({{ selected_ticker }})</h2>
+        <p style="font-size: 20px; font-weight: bold; color: #28a745;">Current Price: {{ real_time_price }}</p>
+
+        <h2>Historical Data</h2>
+        {% if historical_data %}
+            {{ historical_data | safe }}
+        {% else %}
+            <p>No data available for {{ companies[selected_ticker] }}. Please try another company.</p>
+        {% endif %}
+    </div>
+{% endif %}
+
+
+</body>
+</html>
+
