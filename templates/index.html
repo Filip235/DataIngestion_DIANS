@@ -1,4 +1,3 @@
-
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -109,6 +108,35 @@
                 width: 100%;
             }
         }
+
+         .buy {
+        color: green;
+    }
+    .sell {
+        color: red;
+    }
+
+         .price-prediction-container {
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        gap: 20px;
+        flex-wrap: wrap;
+    }
+
+    .price-prediction-container  {
+         width: 100%;
+    border: 1px solid #ddd;
+    border-radius: 10px;
+    background-color: #f9f9f9;
+    text-align: center;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    padding: 20px;
+    min-height: 150px;
+    }
     </style>
 
 </head>
@@ -127,11 +155,26 @@
         <button type="submit">Get Data</button>
     </form>
 
+   <form id="prediction-form" style="margin-top: 20px;">
+    <input type="hidden" id="ticker" name="ticker" value="{{ selected_ticker }}">
+    <button type="submit">Predict Next Day's Price</button>
+</form>
+</form>
+
     {% if selected_ticker %}
-     <div class="data-container">
+     <div class="price-prediction-container">
+    <div class="data-container">
         <h2>Real-Time Price for {{ companies[selected_ticker] }} ({{ selected_ticker }})</h2>
-        <p style="font-size: 20px; font-weight: bold; color: #28a745;">Current Price: {{ real_time_price }}</p>
+        <p style="font-size: 20px; font-weight: bold; color: #28a745;">
+            Current Price: {{ real_time_price }}
+        </p>
+        <h2>Prediction</h2>
+        <p style="font-size: 20px; font-weight: bold;">Predicted Price: <span id="predicted-price"></span></p>
+        <p id="prediction-action" style="font-size: 24px; font-weight: bold;"></p>
     </div>
+
+
+</div>
 
     <div class="chart-container">
         <h2>Stock Price Chart</h2>
@@ -148,6 +191,47 @@
     </div>
 
     <script>
+         document.getElementById("prediction-form").addEventListener("submit", function (e) {
+        e.preventDefault();
+        const ticker = document.getElementById("ticker").value;
+
+        fetch("/predict", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/x-www-form-urlencoded",
+            },
+            body: `ticker=${ticker}`,
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.prediction) {
+                const predictedPrice = data.prediction.toFixed(2);
+                const realTimePrice = parseFloat("{{ real_time_price }}".replace('$', ''));
+
+                document.getElementById("predicted-price").textContent = `$${predictedPrice}`;
+
+                if (predictedPrice > realTimePrice) {
+                    document.getElementById("prediction-action").innerHTML = '<span class="buy">BUY! BUY! BUY!</span>';
+                }
+                else if (predictedPrice == realTimePrice){
+                    document.getElementById("prediction-action").innerHTML = '<span class="hold">HOLD! DONT BUY OR SELL!</span>';
+
+                }
+                else {
+                    document.getElementById("prediction-action").innerHTML = '<span class="sell">SELL! SELL! SELL!</span>';
+                }
+            } else {
+                document.getElementById("predicted-price").textContent = "Error: Unable to predict.";
+                document.getElementById("prediction-action").textContent = "";
+            }
+        })
+        .catch(error => {
+            console.error("Error:", error);
+            document.getElementById("predicted-price").textContent = "Error: Unable to connect to the server.";
+            document.getElementById("prediction-action").textContent = "";
+        });
+    });
+
         var chartData = {{ chart_data | safe }};
 
         if (chartData && chartData.length > 0) {
@@ -171,5 +255,4 @@
 
 </body>
 </html>
-
 
